@@ -1,8 +1,8 @@
 services:
   radiusdesk:
     build:
-      context: ./
-      dockerfile: Dockerfile-build-radiusdesk
+      context: ../
+      dockerfile: docker/Dockerfile-build-radiusdesk
       args:
         radiusdesk_volume: ${RADIUSDESK_VOLUME}
     container_name: radiusdesk
@@ -30,7 +30,7 @@ services:
       - "ALLOW_EMPTY_PASSWORD=yes"
       - "MARIADB_USER=rd"
       - "MARIADB_DATABASE=rd"
-      - "MARDIADB_PASSWORD=rd"
+      - "MARIADB_PASSWORD=rd"
 
     volumes:
       - ${RADIUSDESK_VOLUME}/db_conf/my_custom.cnf:/opt/bitnami/mariadb/conf/my_custom.cnf:ro

@@ -79,7 +79,7 @@ use constant    RAD_LOG_ERROR=>  4;
 #___ RADIUSdesk _______
 sub read_conf {
    $conf{'db_name'}     = "rd";
-   $conf{'db_host'}     = "127.0.0.1";
+   $conf{'db_host'}     = "rdmariadb";
    $conf{'db_user'}     = "rd";
    $conf{'db_passwd'}   = "rd";
    #$conf{'db_socket'}   = "/run/mysqld/mysqld.sock";
@@ -91,7 +91,7 @@ sub _dsn {
     if ($conf{'db_host'} && $conf{'db_host'} eq 'localhost' && $conf{'db_socket'}) {
         return "DBI:mysql:database=$conf{'db_name'};mysql_socket=$conf{'db_socket'}";
     }
-    my $host = $conf{'db_host'} // '127.0.0.1';
+    my $host = $conf{'db_host'} // 'rdmariadb';
     my $port = $conf{'db_port'} // 3306;
     return "DBI:mysql:database=$conf{'db_name'};host=$host;port=$port";
 }
@@ -305,4 +305,3 @@ sub formulate_reply{
             }
     }
 }
-

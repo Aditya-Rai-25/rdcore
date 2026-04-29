@@ -40,7 +40,7 @@ return [
      */
     'Datasources' => [
         'default' => [
-            'host'          => 'localhost',
+            'host'          => 'rdmariadb',
             'className'     => 'Cake\Database\Connection',
             'driver'        => 'Cake\Database\Driver\Mysql',
             'persistent'    => false,
