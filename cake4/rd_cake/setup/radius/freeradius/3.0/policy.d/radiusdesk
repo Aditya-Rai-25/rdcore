@@ -903,10 +903,16 @@ RADIUSdesk_main {
             #We are done with our business. The MAC was not found so we return the default VLAN and PSK
             return   
         }else{
-            update reply {
-                Reply-Message := "User %{request:User-Name} not registered"
+            # If pl_ppsk already set a Tunnel-Password (either via PPSK match or its own default fallback),
+            # then accept immediately (otherwise we'll hit "No Auth-Type found").
+            if(&reply:Tunnel-Password){
+                accept
+            }else{
+                update reply {
+                    Reply-Message := "User %{request:User-Name} not registered"
+                }
+                reject
             }
-            reject
         }
     }
     
