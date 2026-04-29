@@ -51,6 +51,7 @@ use vars qw(
     $stmt_realm_id 
     $stmt_ssid_id 
     $stmt_pmk_list
+    $stmt_dynamic_defaults
     $stmt_password
 );
 
@@ -89,7 +90,7 @@ use constant    RAD_LOG_ERROR=>  4;
 #___ RADIUSdesk _______
 sub read_conf {
    $conf{'db_name'}     = "rd";
-   $conf{'db_host'}     = "127.0.0.1";
+   $conf{'db_host'}     = "rdmariadb";
    $conf{'db_user'}     = "rd";
    $conf{'db_passwd'}   = "rd";
    #$conf{'db_socket'}   = "/run/mysqld/mysqld.sock";
@@ -101,7 +102,7 @@ sub _dsn {
     if ($conf{'db_host'} && $conf{'db_host'} eq 'localhost' && $conf{'db_socket'}) {
         return "DBI:mysql:database=$conf{'db_name'};mysql_socket=$conf{'db_socket'}";
     }
-    my $host = $conf{'db_host'} // '127.0.0.1';
+    my $host = $conf{'db_host'} // 'rdmariadb';
     my $port = $conf{'db_port'} // 3306;
     return "DBI:mysql:database=$conf{'db_name'};host=$host;port=$port";
 }
@@ -159,11 +160,27 @@ sub _prepare_statements {
         SELECT id FROM realm_ssids WHERE name=? AND realm_id=?
     });
      
-     $stmt_pmk_list  = $dbh->prepare(q{
-        SELECT permanent_users.username,permanent_users.session_limit,active,realm_vlans.vlan,realm_pmks.pmk,realm_pmks.ppsk from permanent_users 
+    $stmt_pmk_list  = $dbh->prepare(q{
+        SELECT permanent_users.username,permanent_users.session_limit,active,realm_vlans.vlan,realm_pmks.pmk,realm_pmks.ppsk,permanent_users.extra_value from permanent_users 
         LEFT JOIN realm_vlans ON realm_vlans.id=permanent_users.realm_vlan_id 
         INNER JOIN realm_pmks ON realm_pmks.ppsk=permanent_users.ppsk AND realm_pmks.realm_ssid_id=? 
-        WHERE permanent_users.realm_id=?;
+        WHERE permanent_users.realm_id=?
+        AND LOWER(REPLACE(REPLACE(IFNULL(permanent_users.extra_value,''),':',''),'-','')) = LOWER(REPLACE(REPLACE(? ,':',''),'-',''));
+    });
+
+    # Used to return the "Default Key / Default VLAN" when there is no PPSK match.
+    # IMPORTANT: RadiusDesk stores PPSK defaults in dynamic_client_settings, not on dynamic_clients.
+    # Names:
+    # - ppsk_default_key (fallback '12345678' if missing, matching policy.d/radiusdesk)
+    # - ppsk_default_vlan (fallback 0 if missing)
+    $stmt_dynamic_defaults = $dbh->prepare(q{
+        SELECT
+            MAX(CASE WHEN dcs.name = 'ppsk_default_key'  THEN dcs.value END) AS default_key,
+            MAX(CASE WHEN dcs.name = 'ppsk_default_vlan' THEN dcs.value END) AS default_vlan
+        FROM dynamic_client_settings dcs
+        INNER JOIN dynamic_clients dc ON dc.id = dcs.dynamic_client_id
+        WHERE dc.nasidentifier = ?
+          AND dc.type = 'private_psk'
     });
 
     $stmt_password  = $dbh->prepare(q{
@@ -309,15 +326,18 @@ sub ppsk {
     my $FR_EAPoL_Key_Msg='';
     my $FR_Calling_Station='';
 
-    #if(($RAD_REQUEST{'Attr-245.26.11344.1'})&&($RAD_REQUEST{'Attr-245.26.11344.2'})){    
-    if(($RAD_REQUEST{'FreeRADIUS-802.1X-Anonce'})&&($RAD_REQUEST{'FreeRADIUS-802.1X-EAPoL-Key-Msg'})){    
-	#$FR_Anonce           = $RAD_REQUEST{'Attr-245.26.11344.1'};
+    if(($RAD_REQUEST{'FreeRADIUS-802.1X-Anonce'})&&($RAD_REQUEST{'FreeRADIUS-802.1X-EAPoL-Key-Msg'})){
         $FR_Anonce           = $RAD_REQUEST{'FreeRADIUS-802.1X-Anonce'};
-	#$FR_EAPoL_Key_Msg    = $RAD_REQUEST{'Attr-245.26.11344.2'};
         $FR_EAPoL_Key_Msg    = $RAD_REQUEST{'FreeRADIUS-802.1X-EAPoL-Key-Msg'};
-	    $FR_Calling_Station  = $RAD_REQUEST{'Calling-Station-Id'};
-		$FR_Anonce              =~ s/^0x//i;
-		$FR_EAPoL_Key_Msg       =~ s/^0x//i;   
+        $FR_Calling_Station  = $RAD_REQUEST{'Calling-Station-Id'};
+        $FR_Anonce           =~ s/^0x//i;
+        $FR_EAPoL_Key_Msg    =~ s/^0x//i;
+    }elsif(($RAD_REQUEST{'Attr-245.26.11344.1'})&&($RAD_REQUEST{'Attr-245.26.11344.2'})){
+        $FR_Anonce           = $RAD_REQUEST{'Attr-245.26.11344.1'};
+        $FR_EAPoL_Key_Msg    = $RAD_REQUEST{'Attr-245.26.11344.2'};
+        $FR_Calling_Station  = $RAD_REQUEST{'Calling-Station-Id'};
+        $FR_Anonce           =~ s/^0x//i;
+        $FR_EAPoL_Key_Msg    =~ s/^0x//i;
     }else{
         $RAD_REPLY{'Reply-Message'} = "Required Request Attributes Missing";
         $return = RLM_MODULE_REJECT;
@@ -371,7 +391,7 @@ sub ppsk {
             if($ssid_id){
                 &radiusd::radlog("2", "Found Realm ID $realm_id and ssid_id $ssid_id. We can try to get the LIST OF PPSKs");
                 _ensure_dbh() or return RLM_MODULE_FAIL;
-                $stmt_pmk_list->execute($ssid_id,$realm_id); 
+                $stmt_pmk_list->execute($ssid_id,$realm_id,$RAD_REQUEST{'Calling-Station-Id'}); 
                 my $match_found = 0;            
                 while(my $row = $stmt_pmk_list->fetchrow_hashref()){
                     if(process_row($EAPOL1,$EAPOL2,$ssid,$row->{'ppsk'},$row)){
@@ -383,12 +403,47 @@ sub ppsk {
                 }
                 $stmt_pmk_list->finish();
                 if($match_found == 0){
+                    # No PPSK match: fall back to the Dynamic Client "Default Key / Default VLAN"
+                    # (instead of hard-rejecting and preventing later fallback policies).
+                    if (_fallback_dynamic_client_defaults($RAD_REQUEST{'NAS-Identifier'})) {
+                        return;
+                    }
+
                     $RAD_REPLY{'Reply-Message'} = "No PPSK Match Found";
-                    $return = RLM_MODULE_REJECT;               
+                    $return = RLM_MODULE_REJECT;
                 }            
             }                     
         }        
     }
+}
+
+sub _fallback_dynamic_client_defaults {
+    my ($nasidentifier) = @_;
+    return 0 if (!defined $nasidentifier || $nasidentifier eq '');
+
+    _ensure_dbh() or return 0;
+
+    my ($default_key, $default_vlan);
+    $stmt_dynamic_defaults->execute($nasidentifier);
+    if (my $row = $stmt_dynamic_defaults->fetchrow_hashref()) {
+        $default_key  = $row->{'default_key'};
+        $default_vlan = $row->{'default_vlan'};
+    }
+    $stmt_dynamic_defaults->finish();
+
+    # Mirror RadiusDesk policy behavior
+    $default_key  = '12345678' if (!defined $default_key || $default_key eq '');
+    $default_vlan = 0          if (!defined $default_vlan || $default_vlan eq '');
+
+    $RAD_REPLY{'Tunnel-Password'}           = $default_key;
+    if ($default_vlan ne '0') {
+        $RAD_REPLY{'Tunnel-Type'}               = 'VLAN';
+        $RAD_REPLY{'Tunnel-Medium-Type'}        = 'IEEE-802';
+        $RAD_REPLY{'Tunnel-Private-Group-Id'}   = "$default_vlan";
+    }
+    $RAD_REPLY{'Reply-Message'}             = 'Fallback default PPSK applied';
+    $return = RLM_MODULE_UPDATED;
+    return 1;
 }
 
 # subs below are from the eapol mic matching code
@@ -513,5 +568,3 @@ sub formulate_reply{
 	    }
     }
 }
-
-

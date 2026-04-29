@@ -90,61 +90,56 @@ class RegisterUsersController extends AppController {
 			return; 
 		}
 		
-		//--Do the MAC test --
-		$mac_name   = '';
-		$mac_value  = '';
-		
-		if($q_r->reg_mac_check){
-		    if(array_key_exists('mac',$this->request->getData())){
-				$mac = $this->request->getData('mac');
+			//--Do the MAC test --
+			$mac_name   = '';
+			$mac_value  = '';
+
+			// Try to get MAC from POST body first, then fall back to query string (?mac=..).
+			// The captive portal can supply `mac` in the query string (as in your example URL).
+			$mac = $this->request->getData('mac');
+			if(($mac === null) || ($mac === '')){
+				$mac = $this->request->getQuery('mac');
+			}
+
+			if(($mac !== null) && ($mac !== '')){
 				$mac_value = $mac;
 				$mac_name  = 'mac';
-				if($mac == ''){//Can't use empty MACs
-				    $this->set([
-				        'success'   => false,
-				        'errors'	=> ['Address not specified' => 'MAC Address not specified']
-			        ]);
-			        $this->viewBuilder()->setOption('serialize', true);
-			        return;
-				}
 
+				// Optional uniqueness check: prevent a MAC from being registered to multiple users.
 				$q = $this->PermanentUsers->find()
-					->where(['PermanentUsers.extra_name' 	=> 'mac', 'PermanentUsers.extra_value' => $mac,])
+					->where(['PermanentUsers.extra_name' 	=> 'mac', 'PermanentUsers.extra_value' => $mac])
 					->contain(['PermanentUserOtps'])
 					->first();
 
 				if($q){
-				
-					if($q->permanent_user_otp){
-						if($q->permanent_user_otp->status == 'otp_awaiting'){						
-							$data_awaiting = [
-								'id'		=> $q->id,
-								'otp_show'  => true,
-								'message'	=> "Supply OTP Please"
-							];
-							$pu_id   = $q_r->permanent_user_id;
-							if(($pu_id != 0)&($q_r->reg_otp_email)){
-								$e_pu = $this->{'PermanentUsers'}->find()->where(['PermanentUsers.id' => $pu_id])->first();
-								if($e_pu){
-									$e_rd = $this->{'Radchecks'}->find()->where(['Radchecks.username' => $e_pu->username,'Radchecks.attribute' => 'Cleartext-Password'])->first();
-									if($e_rd){
-										$message = __("OTP sent to").' '.$this->Formatter->hide_email($q->email)."<br><b>Temporary Internet Access Given To Retrieve OTP Through Email</b>";
-										$data_awaiting['temp_username'] 	= $e_pu->username;
-										$data_awaiting['temp_password'] 	= $e_rd->value;
-										$data_awaiting['message'] 			= $message;
-									}
-								}                   						
-							}								
-						
-							$this->set([
-								'success'   => true,
-								'data'		=> $data_awaiting
-							]);
-							$this->viewBuilder()->setOption('serialize', true);
-							return;						
-						}					
+					if($q->permanent_user_otp && ($q->permanent_user_otp->status == 'otp_awaiting')){
+						$data_awaiting = [
+							'id'		=> $q->id,
+							'otp_show'  => true,
+							'message'	=> "Supply OTP Please"
+						];
+						$pu_id   = $q_r->permanent_user_id;
+						if(($pu_id != 0)&($q_r->reg_otp_email)){
+							$e_pu = $this->{'PermanentUsers'}->find()->where(['PermanentUsers.id' => $pu_id])->first();
+							if($e_pu){
+								$e_rd = $this->{'Radchecks'}->find()->where(['Radchecks.username' => $e_pu->username,'Radchecks.attribute' => 'Cleartext-Password'])->first();
+								if($e_rd){
+									$message = __("OTP sent to").' '.$this->Formatter->hide_email($q->email)."<br><b>Temporary Internet Access Given To Retrieve OTP Through Email</b>";
+									$data_awaiting['temp_username'] 	= $e_pu->username;
+									$data_awaiting['temp_password'] 	= $e_rd->value;
+									$data_awaiting['message'] 			= $message;
+								}
+							}
+						}
+
+						$this->set([
+							'success'   => true,
+							'data'		=> $data_awaiting
+						]);
+						$this->viewBuilder()->setOption('serialize', true);
+						return;
 					}
-				
+
 					$already_username = $q->username;
 					$this->set([
 						'success'   => false,
@@ -153,16 +148,7 @@ class RegisterUsersController extends AppController {
 					$this->viewBuilder()->setOption('serialize', true);
 					return;
 				}
-			}else{
-
-				$this->set([
-					'success'   => false,
-					'errors'	=> ['Device ID Missing' => 'Device MAC not in request']
-				]);
-				$this->viewBuilder()->setOption('serialize', true);
-				return;
 			}
-		}
 		
 
 		//Get the token of the Owner of the Cloud
@@ -343,7 +329,6 @@ class RegisterUsersController extends AppController {
 		}
 
 		if($responseData['success'] == true){
-
 			//Check if we need to email them
 			if($q_r->reg_email){
 				$this->_email_user_detail($cloud_id,$username,$password);
@@ -725,7 +710,7 @@ class RegisterUsersController extends AppController {
 	private function _sms_otp($phone,$otp,$cloud_id,$reason){
 		// public function sendSms($phone,$message,$nr,$cloud_id,$reason='test_settings'){
 		$this->RdSms->sendSms($phone,$otp,0,$cloud_id,$reason);
-	
+		
 	}
 
 }
