@@ -170,17 +170,16 @@ sub _prepare_statements {
 
     # Used to return the "Default Key / Default VLAN" when there is no PPSK match.
     # IMPORTANT: RadiusDesk stores PPSK defaults in dynamic_client_settings, not on dynamic_clients.
-    # Names:
-    # - ppsk_default_key (fallback '12345678' if missing, matching policy.d/radiusdesk)
-    # - ppsk_default_vlan (fallback 0 if missing)
+    #
+    # Security: do NOT invent a default PPSK/VLAN when settings are missing.
+    # CI/ops should ensure defaults exist where intended, otherwise we reject.
     $stmt_dynamic_defaults = $dbh->prepare(q{
-        SELECT
-            MAX(CASE WHEN dcs.name = 'ppsk_default_key'  THEN dcs.value END) AS default_key,
-            MAX(CASE WHEN dcs.name = 'ppsk_default_vlan' THEN dcs.value END) AS default_vlan
+        SELECT dcs.name, dcs.value
         FROM dynamic_client_settings dcs
         INNER JOIN dynamic_clients dc ON dc.id = dcs.dynamic_client_id
         WHERE dc.nasidentifier = ?
           AND dc.type = 'private_psk'
+          AND dcs.name IN ('ppsk_default_key','ppsk_default_vlan')
     });
 
     $stmt_password  = $dbh->prepare(q{
@@ -425,18 +424,24 @@ sub _fallback_dynamic_client_defaults {
 
     my ($default_key, $default_vlan);
     $stmt_dynamic_defaults->execute($nasidentifier);
-    if (my $row = $stmt_dynamic_defaults->fetchrow_hashref()) {
-        $default_key  = $row->{'default_key'};
-        $default_vlan = $row->{'default_vlan'};
+    while (my $row = $stmt_dynamic_defaults->fetchrow_hashref()) {
+        if ($row->{'name'} && $row->{'name'} eq 'ppsk_default_key') {
+            $default_key = $row->{'value'};
+            next;
+        }
+        if ($row->{'name'} && $row->{'name'} eq 'ppsk_default_vlan') {
+            $default_vlan = $row->{'value'};
+            next;
+        }
     }
     $stmt_dynamic_defaults->finish();
 
-    # Mirror RadiusDesk policy behavior
-    $default_key  = '12345678' if (!defined $default_key || $default_key eq '');
-    $default_vlan = 0          if (!defined $default_vlan || $default_vlan eq '');
+    # Only fall back if the dynamic client actually has a configured default key.
+    # Never invent a fallback PPSK/VLAN.
+    return 0 if (!defined $default_key || $default_key eq '');
 
     $RAD_REPLY{'Tunnel-Password'}           = $default_key;
-    if ($default_vlan ne '0') {
+    if (defined $default_vlan && $default_vlan ne '' && $default_vlan ne '0') {
         $RAD_REPLY{'Tunnel-Type'}               = 'VLAN';
         $RAD_REPLY{'Tunnel-Medium-Type'}        = 'IEEE-802';
         $RAD_REPLY{'Tunnel-Private-Group-Id'}   = "$default_vlan";

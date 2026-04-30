@@ -101,13 +101,36 @@ class RegisterUsersController extends AppController {
 				$mac = $this->request->getQuery('mac');
 			}
 
+			// Normalize MAC so duplicate detection works across fa:.. / FA-.. / fa.. formats.
+			$mac_norm = '';
 			if(($mac !== null) && ($mac !== '')){
-				$mac_value = $mac;
+				$mac_norm = preg_replace('/[^0-9a-f]/i', '', (string)$mac);
+				$mac_norm = strtolower($mac_norm);
+				if(strlen($mac_norm) !== 12){
+					$mac_norm = '';
+				}
+			}
+
+			// If the login page requires MAC binding, enforce MAC presence.
+			if($q_r->reg_mac_check && ($mac_norm === '')){
+				$this->set([
+					'success'   => false,
+					'errors'	=> ['Device ID Missing' => 'Device MAC not in request']
+				]);
+				$this->viewBuilder()->setOption('serialize', true);
+				return;
+			}
+
+			if($mac_norm !== ''){
+				$mac_value = $mac_norm;
 				$mac_name  = 'mac';
 
-				// Optional uniqueness check: prevent a MAC from being registered to multiple users.
+				// Uniqueness check: prevent a MAC from being registered to multiple users.
 				$q = $this->PermanentUsers->find()
-					->where(['PermanentUsers.extra_name' 	=> 'mac', 'PermanentUsers.extra_value' => $mac])
+					->where([
+						'PermanentUsers.extra_name' => 'mac',
+						"LOWER(REPLACE(REPLACE(PermanentUsers.extra_value,':',''),'-',''))" => $mac_norm
+					])
 					->contain(['PermanentUserOtps'])
 					->first();
 
