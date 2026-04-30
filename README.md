@@ -1,21 +1,54 @@
-# Installation
-The recommended **Operating System** to develop and run RdCore on is **Ubuntu**
+# RdCore (Docker Setup)
 
-### Installing RdCore on Ubuntu 24.04
-*  This guide assumes you have an **Ubuntu 24.04** machine with ssh access.
-*  [Ubuntu 24.04 Installation Guide](https://www.radiusdesk.com/wiki24/user_manuals)
+This repository provides a Docker-based setup for:
+- RadiusDesk UI/API (CakePHP 4 + ExtJS)
+- FreeRADIUS 3.x
+- MariaDB
 
-# Licensing
-* All the code is published under the **GNU General Public License v3.0**.<br/>
-* This means that you may make modifications and changes.
+## System Requirements
+- Host OS: Ubuntu 24.04 (tested)
+- Docker Engine + Docker Compose installed
+- Port `80` available on your host
 
-# Funding
+## First-Time Setup (Bootstrap DB + Start Containers)
+```bash
+git clone https://github.com/routerarchitects/rdcore.git
+cd rdcore
+git checkout cake4
 
-This project also received funding through [NGI0 Entrust](https://nlnet.nl/entrust), a fund established by [NLnet](https://nlnet.nl) with financial support from the European Commission's [Next Generation Internet](https://ngi.eu) program.<br/>
-Learn more at the [NLnet project page](https://nlnet.nl/project/RADIUSdesk-Multiwan).<br/>
-<br/>
-[<img src="https://nlnet.nl/logo/banner.png" alt="NLnet foundation logo" width="20%" />](https://nlnet.nl)<br/>
-[<img src="https://nlnet.nl/image/logos/NGI0_tag.svg" alt="NGI Zero Logo" width="20%" />](https://nlnet.nl/entrust)<br/>
+cd docker
+sudo ./local_build.sh
+```
 
+Open the UI:
+```text
+http://<your-host-ip>/
+```
 
+## After Code Changes (Fast Dev Loop)
+
+You do **not** need to re-run `local_build.sh` for normal changes.
+
+Rebuild and recreate only the `radiusdesk` container:
+```bash
+cd docker
+docker compose build radiusdesk
+docker compose up -d --force-recreate radiusdesk
+```
+
+## Useful Commands
+```bash
+cd docker
+docker compose ps
+docker logs -f radiusdesk
+docker logs -f radiusdesk-mariadb
+```
+
+## Resetting The Database (Optional)
+
+Only do this if you intentionally want a fresh DB.
+
+1. Stop containers: `cd docker && docker compose down`
+2. Delete the DB volume folder configured in `docker/.env` (`RADIUSDESK_VOLUME`)
+3. Run `cd docker && sudo ./local_build.sh` again
 
