@@ -161,11 +161,20 @@ sub _prepare_statements {
     });
      
     $stmt_pmk_list  = $dbh->prepare(q{
-        SELECT permanent_users.username,permanent_users.session_limit,active,realm_vlans.vlan,realm_pmks.pmk,realm_pmks.ppsk,permanent_users.extra_value from permanent_users 
-        LEFT JOIN realm_vlans ON realm_vlans.id=permanent_users.realm_vlan_id 
-        INNER JOIN realm_pmks ON realm_pmks.ppsk=permanent_users.ppsk AND realm_pmks.realm_ssid_id=? 
-        WHERE permanent_users.realm_id=?
-        AND LOWER(REPLACE(REPLACE(IFNULL(permanent_users.extra_value,''),':',''),'-','')) = LOWER(REPLACE(REPLACE(? ,':',''),'-',''));
+        SELECT
+            permanent_users.id,
+            permanent_users.username,
+            permanent_users.session_limit,
+            permanent_users.active,
+            realm_vlans.vlan,
+            realm_pmks.pmk,
+            realm_pmks.ppsk
+        FROM permanent_users
+        LEFT JOIN realm_vlans ON realm_vlans.id = permanent_users.realm_vlan_id
+        INNER JOIN realm_pmks ON realm_pmks.ppsk = permanent_users.ppsk
+            AND realm_pmks.realm_ssid_id = ?
+        WHERE permanent_users.realm_id = ?
+          AND permanent_users.active = 1
     });
 
     # Used to return the "Default Key / Default VLAN" when there is no PPSK match.
@@ -390,17 +399,37 @@ sub ppsk {
             if($ssid_id){
                 &radiusd::radlog("2", "Found Realm ID $realm_id and ssid_id $ssid_id. We can try to get the LIST OF PPSKs");
                 _ensure_dbh() or return RLM_MODULE_FAIL;
-                $stmt_pmk_list->execute($ssid_id,$realm_id,$RAD_REQUEST{'Calling-Station-Id'}); 
-                my $match_found = 0;            
+                $stmt_pmk_list->execute($ssid_id,$realm_id);
+
+                my $match_found = 0;
+                my $multi_match = 0;
+                my $matched_row;
+
                 while(my $row = $stmt_pmk_list->fetchrow_hashref()){
                     if(process_row($EAPOL1,$EAPOL2,$ssid,$row->{'ppsk'},$row)){
-                        #Formulate the reply
-                        formulate_reply($row,$realm_id);
+                        if($match_found){
+                            $multi_match = 1;
+                            last;
+                        }
                         $match_found = 1;
-                        last;
+                        $matched_row = $row;
                     }
                 }
                 $stmt_pmk_list->finish();
+
+                if($multi_match){
+                    &radiusd::radlog(RAD_LOG_ERROR, "PPSK multiple matches for SSID '$ssid' on NAS-Identifier '$RAD_REQUEST{'NAS-Identifier'}' (MAC $RAD_REQUEST{'Calling-Station-Id'})");
+                    $RAD_REPLY{'Reply-Message'} = "Multiple PPSK matches found";
+                    $return = RLM_MODULE_REJECT;
+                    return;
+                }
+
+                if($match_found == 1){
+                    # Exactly one PPSK match.
+                    formulate_reply($matched_row,$realm_id);
+                    return;
+                }
+
                 if($match_found == 0){
                     # No PPSK match: fall back to the Dynamic Client "Default Key / Default VLAN"
                     # (instead of hard-rejecting and preventing later fallback policies).
@@ -499,7 +528,8 @@ sub process_row {
     my $MICCALC  = substr(unpack("H*",$MICRAW), 0, 32);
 
     if ($MICFOUND eq $MICCALC) {
-        &radiusd::radlog("2","PPSK Match found $PASS");
+        # Do not log passphrases.
+        &radiusd::radlog("2","PPSK Match found (SSID '$SSID')");
         $match_found = 1;
     }
     return $match_found;
